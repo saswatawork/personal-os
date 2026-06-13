@@ -1,0 +1,55 @@
+# personal-os — Provider Configuration
+#
+# active_provider: which LLM to use right now
+# Change this one line to switch providers. Nothing else changes.
+#
+# Options: mock | ollama | claude_api | openai | gemini
+
+active_provider: ollama
+
+providers:
+
+  # mock — development only, no API key, no internet needed
+  # Returns a canned response. Use this while building and testing.
+  mock:
+    model: mock
+
+  # ollama — local models, free, private, no API key
+  # Requires Ollama running: https://ollama.com
+  # Pull a model first: ollama pull llama3.2
+  ollama:
+    model: ollama/qwen2.5:7b
+    base_url: http://localhost:11434
+
+  # claude_api — Anthropic Claude
+  # API key via environment variable: export ANTHROPIC_API_KEY=sk-ant-...
+  claude_api:
+    model: claude-sonnet-4-6
+
+  # openai — OpenAI GPT models
+  # API key via environment variable: export OPENAI_API_KEY=sk-...
+  openai:
+    model: gpt-4o
+
+  # gemini — Google Gemini
+  # API key via environment variable: export GEMINI_API_KEY=...
+  gemini:
+    model: gemini/gemini-2.0-flash
+
+# Cost-aware routing — maps complexity tiers to models
+# Router picks the tier automatically based on question analysis.
+# Override any tier here to use a different model without touching code.
+routing:
+  fast:                                     # short/simple questions
+    provider: ollama
+    model: ollama/llama3.2                  # 2GB, very fast, free
+
+  local:                                    # context-aware advice, default
+    provider: ollama
+    model: ollama/qwen2.5:7b               # 4.7GB, good reasoning, free
+
+  strong:                                   # deep career/finance decisions
+    provider: gemini
+    model: gemini/gemini-2.5-flash         # free tier, best available on this key
+    # provider: ollama                      # fallback if no GEMINI_API_KEY set
+    # model: ollama/qwen2.5:7b
