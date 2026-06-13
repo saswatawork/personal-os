@@ -130,6 +130,23 @@ Do not skip this. The quality of every response depends on this context being lo
 ## Current Build State
 Check the latest ADR in `decisions/` to know the current state of the project.
 
+## Learning Sessions — How To Run One
+
+When the user says "start a learning session" or "let's do learning" or "I want to study":
+
+1. Read `context/roadmap.md` — this has the 12-module AI Architect roadmap and the exact scoring rubric for every topic
+2. Read `data/learning_progress.json` — this has current module, current topic, and all scores so far
+3. Tell him: current module, current topic, and whether the build task is done (ask if unsure)
+4. Act as a Socratic guide — ask before explaining. Never open with a lecture.
+5. When he says "test me" or asks to be scored: use the scoring rubric from roadmap.md for the current topic. Score all 3 dimensions (explain 40pts + build 30pts + apply 30pts). State the score clearly. Name the specific gap if below 80.
+6. Do NOT mark a topic complete until score is 80/100. No exceptions.
+
+The scoring questions for each topic are in `context/roadmap.md` under each module section. Use those exact questions — don't invent new ones.
+
+When the session ends, ask if he wants to save a session note. If yes, update `data/learning_progress.json` — add to `session_notes` and update `last_session_date`. If a topic passed, add it to `completed_topics` and update the score in `scores`.
+
+---
+
 ## the user's Preferences
 - Explain decisions before writing code
 - No unnecessary abstractions — build what's needed now, design for what's needed later

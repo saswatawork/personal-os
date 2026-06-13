@@ -72,6 +72,9 @@ def build_system_prompt(loader: ContextLoader, progress: Progress) -> str:
     with open(Path(__file__).parent.parent.parent / "context" / "learning.md") as f:
         curriculum = f.read()
 
+    roadmap_path = Path(__file__).parent.parent.parent / "context" / "roadmap.md"
+    roadmap = roadmap_path.read_text() if roadmap_path.exists() else ""
+
     topic = progress.current_topic or progress.next_topic() or "all topics in current module"
     topic_display = topic.replace("_", " ") if topic else "all topics"
     last_note = progress.session_notes[-1]["summary"] if progress.session_notes else "No previous sessions."
@@ -85,12 +88,15 @@ Current learning state:
 - Last session note: {last_note}
 """
 
-    return "\n\n".join([
+    parts = [
         LEARNING_GUIDE_PERSONA,
         "## Personal Context\n" + light_context,
         "## Curriculum\n" + curriculum,
         "## Progress\n" + progress_block,
-    ])
+    ]
+    if roadmap:
+        parts.append("## AI Architect Roadmap (Scoring Rubric)\n" + roadmap)
+    return "\n\n".join(parts)
 
 
 def opening_message(progress: Progress) -> str:

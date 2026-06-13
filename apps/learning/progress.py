@@ -95,18 +95,33 @@ class Progress:
             notes.pop(0)
         self._data["last_session_date"] = str(date.today())
 
+    def get_score(self, topic: str) -> Optional[int]:
+        return self._data.get("scores", {}).get(topic)
+
+    def set_score(self, topic: str, score: int) -> None:
+        self._data.setdefault("scores", {})[topic] = score
+
     def status_summary(self) -> str:
         topic = self.current_topic or self.next_topic() or "all done"
         topic_display = topic.replace("_", " ") if topic else "all done"
         module_display = self.module_name()
         completed_count = len(self.completed_topics)
         last = self.last_session_date or "never"
+        cutoff = self._data.get("cutoff_score", 80)
         lines = [
             f"Module {self.current_module}: {module_display}",
             f"Current topic: {topic_display}",
-            f"Topics completed: {completed_count}",
+            f"Topics completed: {completed_count} / 12",
+            f"Pass threshold: {cutoff}/100",
             f"Last session: {last}",
         ]
+        scores = self._data.get("scores", {})
+        scored = {k: v for k, v in scores.items() if v is not None}
+        if scored:
+            lines.append("Scores:")
+            for t, s in scored.items():
+                status = "PASS" if s >= cutoff else "FAIL"
+                lines.append(f"  {t.replace('_', ' ')}: {s}/100 [{status}]")
         if self.session_notes:
             lines.append(f"Last note: {self.session_notes[-1]['summary']}")
         return "\n".join(lines)
