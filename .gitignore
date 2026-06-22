@@ -16,6 +16,10 @@ context/*.md
 # Personal data — learning history, session notes
 data/
 
+# Personal documents — never commit
+resume.md
+resume.pdf
+
 # OS
 .DS_Store
 

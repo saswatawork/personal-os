@@ -48,8 +48,8 @@ class ContextLoader:
 
         parts = [
             "You are a personal advisor to the user.",
-            "Below is his full personal context. Use it to give specific, grounded advice.",
-            "Speak directly to him — not to a generic person, to him specifically.",
+            "Below is their full personal context. Use it to give specific, grounded advice.",
+            "Speak directly to them — not to a generic person, to them specifically.",
             "",
         ]
 
