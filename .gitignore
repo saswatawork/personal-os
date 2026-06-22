@@ -9,6 +9,13 @@ __pycache__/
 *.env
 secrets/
 
+# Personal context — stays local, never committed
+# Copy from context/templates/ and fill in your own data
+context/*.md
+
+# Personal data — learning history, session notes
+data/
+
 # OS
 .DS_Store
 
