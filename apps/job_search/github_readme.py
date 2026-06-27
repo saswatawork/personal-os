@@ -5,9 +5,9 @@ Reads personal context, generates a profile README using the LLM,
 and pushes it to your GitHub profile repo (username/username).
 
 Usage:
-    python apps/job_search/github_readme.py
-    python apps/job_search/github_readme.py --dry-run   # preview without pushing
-    python apps/job_search/github_readme.py --repo saswatapal/saswatapal
+    python -m apps.job_search.github_readme
+    python -m apps.job_search.github_readme --dry-run   # preview without pushing
+    python -m apps.job_search.github_readme --repo saswatapal/saswatapal
 
 Requirements:
     pip install PyGithub
@@ -16,11 +16,8 @@ Requirements:
 
 import argparse
 import os
+import subprocess
 import sys
-from pathlib import Path
-
-# Allow running from any directory
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from core.context_loader import ContextLoader
 from core.provider import ProviderError
@@ -28,7 +25,7 @@ from core.router import Router
 
 CONTEXT_FILES = ["profile", "career", "goals"]
 
-# Sentinel question — complex enough to route to the strongest available model
+# Sentinel question — complex enough to route to the strongest available model.
 _ROUTING_SIGNAL = "generate my github profile readme based on my career goals and context"
 
 README_PROMPT = """
@@ -80,23 +77,23 @@ def generate_readme(loader: ContextLoader) -> str:
     system_prompt = loader.as_system_prompt(CONTEXT_FILES)
     print("Generating README via LLM...")
 
-    # Use claude CLI (claude -p) — same Claude you're using in Claude Code, no API key needed
+    # Prefer the claude CLI (no API key needed when running inside Claude Code).
     try:
         return _generate_via_claude_cli(system_prompt)
     except Exception as e:
         print(f"[claude-cli] failed: {e} — falling back to configured provider...")
 
-    # Fallback: use whatever provider is configured in settings.yaml
+    # Fallback: use whatever provider is configured in settings.yaml.
+    router = Router()
+    _, provider = router.route_with_tier(_ROUTING_SIGNAL)
+    print(f"Trying: {provider.status()}")
     try:
-        provider = _make_routed_provider()
-        print(f"Trying: {provider.status()}")
-        return provider.chat(README_PROMPT, system_prompt=system_prompt).strip()
+        return str(provider.chat(README_PROMPT, system_prompt=system_prompt)).strip()
     except Exception as e:
-        raise RuntimeError(f"All providers failed: {e}")
+        raise RuntimeError(f"All providers failed: {e}") from e
 
 
 def _generate_via_claude_cli(system_prompt: str) -> str:
-    import subprocess
     full_prompt = f"{system_prompt}\n\n{README_PROMPT}"
     print("Generating via claude CLI...")
     result = subprocess.run(
@@ -108,33 +105,6 @@ def _generate_via_claude_cli(system_prompt: str) -> str:
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "claude CLI returned non-zero exit code")
     return result.stdout.strip()
-
-
-def _make_routed_provider():
-    router = Router()
-    _, provider = router.route_with_tier(_ROUTING_SIGNAL)
-    return provider
-
-
-def _make_claude_provider():
-    import os
-    if not os.getenv("ANTHROPIC_API_KEY"):
-        return None
-    from core.router import RoutedProvider
-    return RoutedProvider(
-        provider_name="claude_api",
-        model="claude-sonnet-4-6",
-        provider_config={},
-    )
-
-
-def _make_local_provider():
-    from core.router import RoutedProvider
-    return RoutedProvider(
-        provider_name="ollama",
-        model="ollama/qwen2.5:7b",
-        provider_config={"base_url": "http://localhost:11434"},
-    )
 
 
 def push_to_github(content: str, repo_name: str) -> None:
@@ -158,7 +128,7 @@ def push_to_github(content: str, repo_name: str) -> None:
         repo = g.get_repo(repo_name)
     except GithubException as e:
         print(f"ERROR: Could not access repo '{repo_name}': {e}")
-        print(f"Make sure the repo exists and your token has access to it.")
+        print("Make sure the repo exists and your token has access to it.")
         sys.exit(1)
 
     try:
@@ -171,7 +141,6 @@ def push_to_github(content: str, repo_name: str) -> None:
         )
         print(f"Updated README.md in {repo_name}")
     except GithubException:
-        # File doesn't exist yet — create it
         repo.create_file(
             path="README.md",
             message="docs: create profile README from personal context",
@@ -180,7 +149,7 @@ def push_to_github(content: str, repo_name: str) -> None:
         print(f"Created README.md in {repo_name}")
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Generate and push GitHub profile README")
     parser.add_argument(
         "--dry-run",
@@ -190,18 +159,17 @@ def main():
     parser.add_argument(
         "--repo",
         default=None,
-        help="GitHub repo to push to (default: username/username from GITHUB_TOKEN)",
+        help="GitHub repo to push to (default: inferred from GITHUB_TOKEN)",
     )
     args = parser.parse_args()
 
     loader = ContextLoader()
-
     print(f"Loading context: {', '.join(CONTEXT_FILES)}")
     print()
 
     try:
         readme = generate_readme(loader)
-    except ProviderError as e:
+    except (ProviderError, RuntimeError) as e:
         print(f"ERROR: {e}")
         sys.exit(1)
 
@@ -215,12 +183,10 @@ def main():
 
     repo_name = args.repo
     if not repo_name:
-        # Infer from GitHub token: get authenticated user's login
         try:
-            from github import Github
+            from github import Github, Auth
             token = os.getenv("GITHUB_TOKEN")
             if token:
-                from github import Auth
                 g = Github(auth=Auth.Token(token))
                 username = g.get_user().login
                 repo_name = f"{username}/{username}"

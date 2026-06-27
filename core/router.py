@@ -15,22 +15,27 @@ Usage:
     provider = router.route("What is my biggest career risk?")
     response = provider.chat(question, system_prompt)
 
-Or let it auto-select:
+Or to see which tier was selected:
     tier, provider = router.route_with_tier(question)
     print(f"Using tier: {tier}")
 """
 
+import logging
 import os
 import re
-from typing import Tuple
+from pathlib import Path
+from typing import Any, Generator
 
 import yaml
-from pathlib import Path
+
+from core.provider import ProviderError, check_api_key, build_messages, stream_tokens
+
+log = logging.getLogger(__name__)
 
 CONFIG_PATH = Path(__file__).parent.parent / "config" / "settings.yaml"
 
-# Keywords that signal a complex question needing a stronger model
-COMPLEX_SIGNALS = [
+# Words that signal a complex question — matched on whole words only.
+_COMPLEX_SIGNALS: list[str] = [
     "career", "promotion", "salary", "job", "resign", "leave", "hire",
     "invest", "financial", "money", "loan", "emi", "corpus", "sip",
     "should i", "what should", "help me decide", "advice",
@@ -39,11 +44,15 @@ COMPLEX_SIGNALS = [
     "goal", "future", "next year", "long term",
 ]
 
-# Keywords that signal a simple question — fast model is fine
-SIMPLE_SIGNALS = [
+# Words that signal a simple question — fast model is fine.
+_SIMPLE_SIGNALS: list[str] = [
     "what is", "define", "explain", "how does", "status", "list",
     "show me", "what are", "tell me about", "summarize",
 ]
+
+# Pre-compiled patterns to avoid re-compiling on every classify() call.
+_COMPLEX_RE = [re.compile(r"\b" + re.escape(s) + r"\b") for s in _COMPLEX_SIGNALS]
+_SIMPLE_RE  = [re.compile(r"\b" + re.escape(s) + r"\b") for s in _SIMPLE_SIGNALS]
 
 
 def classify(question: str) -> str:
@@ -55,13 +64,11 @@ def classify(question: str) -> str:
     q = question.lower().strip()
     word_count = len(q.split())
 
-    # Very short questions → fast
     if word_count <= 5:
         return "fast"
 
-    # Check for complex signals first — they override simple signals
-    complex_hits = sum(1 for sig in COMPLEX_SIGNALS if sig in q)
-    simple_hits = sum(1 for sig in SIMPLE_SIGNALS if sig in q)
+    complex_hits = sum(1 for pattern in _COMPLEX_RE if pattern.search(q))
+    simple_hits  = sum(1 for pattern in _SIMPLE_RE  if pattern.search(q))
 
     if complex_hits >= 2:
         return "strong"
@@ -70,34 +77,32 @@ def classify(question: str) -> str:
     if simple_hits >= 1 and word_count < 15:
         return "fast"
 
-    # Default: local — good balance of quality and cost
     return "local"
 
 
 class RouterConfig:
     """Reads provider config and maps tiers to providers."""
 
-    def __init__(self, config_path: Path = CONFIG_PATH):
+    def __init__(self, config_path: Path = CONFIG_PATH) -> None:
+        if not config_path.exists():
+            raise ProviderError(f"Config file not found: {config_path}")
         with open(config_path) as f:
-            self._config = yaml.safe_load(f)
-        self._providers = self._config.get("providers", {})
-        self._routing = self._config.get("routing", self._default_routing())
+            self._config: dict[str, Any] = yaml.safe_load(f)
+        self._providers: dict[str, Any] = self._config.get("providers", {})
+        self._routing: dict[str, Any] = self._config.get("routing", self._default_routing())
 
-    def _default_routing(self) -> dict:
-        """
-        Fallback routing if no [routing] section in settings.yaml.
-        Prefers local models — no API key needed.
-        """
+    def _default_routing(self) -> dict[str, Any]:
+        """Fallback routing when no [routing] section exists in settings.yaml."""
         return {
             "fast":   {"provider": "ollama", "model": "ollama/llama3.2"},
             "local":  {"provider": "ollama", "model": "ollama/qwen2.5:7b"},
             "strong": {"provider": "ollama", "model": "ollama/qwen2.5:7b"},
         }
 
-    def get(self, tier: str) -> dict:
+    def get(self, tier: str) -> dict[str, Any]:
         return self._routing.get(tier, self._routing["local"])
 
-    def provider_config(self, provider_name: str) -> dict:
+    def provider_config(self, provider_name: str) -> dict[str, Any]:
         return self._providers.get(provider_name, {})
 
 
@@ -105,38 +110,36 @@ class Router:
     """
     Routes a question to the right provider based on complexity.
 
-    The router creates a lightweight Provider-like object for each tier
-    so it can be used as a drop-in replacement for Provider.
+    Returns a RoutedProvider configured for the selected tier, so it can be
+    used as a drop-in replacement for Provider.
     """
 
-    def __init__(self, config_path: Path = CONFIG_PATH):
+    def __init__(self, config_path: Path = CONFIG_PATH) -> None:
         self._rc = RouterConfig(config_path)
 
-    def route(self, question: str):
-        """
-        Returns a configured Provider for the right tier.
-        Use like: provider = router.route(question); provider.chat(...)
-        """
+    def route(self, question: str) -> "RoutedProvider":
+        """Return a configured RoutedProvider for the right tier."""
         _, provider = self.route_with_tier(question)
         return provider
 
-    def route_with_tier(self, question: str) -> Tuple[str, "RoutedProvider"]:
+    def route_with_tier(self, question: str) -> tuple[str, "RoutedProvider"]:
         """
-        Returns (tier_name, provider) so the caller can log which tier was used.
-        Falls back to local tier if the strong tier needs an API key that isn't set.
+        Return (tier_name, provider).
+
+        Falls back to the local tier if the strong tier needs a cloud key that
+        isn't set — avoids crashing mid-session.
         """
         tier = classify(question)
         routing = self._rc.get(tier)
         provider_name = routing["provider"]
         model = routing["model"]
 
-        # Graceful fallback: if strong tier needs a cloud key and it's missing,
-        # drop back to local rather than crashing mid-session
-        if tier == "strong" and not self._key_available(provider_name):
+        if tier == "strong" and not _key_available(provider_name):
             fallback = self._rc.get("local")
-            print(
-                f"[router] No API key for '{provider_name}' — "
-                f"falling back to local: {fallback['model']}"
+            log.warning(
+                "No API key for '%s' — falling back to local: %s",
+                provider_name,
+                fallback["model"],
             )
             provider_name = fallback["provider"]
             model = fallback["model"]
@@ -149,21 +152,8 @@ class Router:
             provider_config=provider_config,
         )
 
-    def _key_available(self, provider_name: str) -> bool:
-        key_map = {
-            "claude_api": "ANTHROPIC_API_KEY",
-            "openai":     "OPENAI_API_KEY",
-            "gemini":     "GEMINI_API_KEY",
-        }
-        env_var = key_map.get(provider_name)
-        if env_var is None:
-            return True  # ollama and mock need no key
-        return bool(os.getenv(env_var))
-
     def explain(self, question: str) -> str:
-        """
-        Explain the routing decision for a question — useful for debugging.
-        """
+        """Return a human-readable routing decision — useful for debugging."""
         tier = classify(question)
         routing = self._rc.get(tier)
         return (
@@ -176,11 +166,18 @@ class Router:
 
 class RoutedProvider:
     """
-    A thin provider that uses the model/config the Router selected.
-    Same interface as Provider — apps don't need to know the difference.
+    A thin provider configured by the Router for a specific tier.
+
+    Same interface as Provider (satisfies ProviderProtocol) — apps don't
+    need to know whether they're talking to Provider or RoutedProvider.
     """
 
-    def __init__(self, provider_name: str, model: str, provider_config: dict):
+    def __init__(
+        self,
+        provider_name: str,
+        model: str,
+        provider_config: dict[str, Any],
+    ) -> None:
         self._provider_name = provider_name
         self._model = model
         self._provider_config = provider_config
@@ -199,51 +196,37 @@ class RoutedProvider:
     def chat(
         self,
         user_message: str,
-        system_prompt: str = None,
+        system_prompt: str | None = None,
         stream: bool = False,
-        history: list = None,
-    ) -> str:
+        history: list[dict[str, str]] | None = None,
+    ) -> str | Generator[str, None, None]:
         try:
             import litellm
         except ImportError:
-            raise RuntimeError("litellm is not installed. Run: /usr/bin/python3 -m pip install litellm")
+            raise ProviderError("litellm is not installed. Run: pip install litellm")
 
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        if history:
-            messages.extend(history)
-        messages.append({"role": "user", "content": user_message})
-
-        kwargs = {"model": self._model, "messages": messages, "stream": stream}
+        messages = build_messages(user_message, system_prompt, history)
+        kwargs: dict[str, Any] = {"model": self._model, "messages": messages, "stream": stream}
         if "base_url" in self._provider_config:
             kwargs["api_base"] = self._provider_config["base_url"]
 
-        self._check_api_key()
+        check_api_key(self._provider_name)
 
-        response = litellm.completion(**kwargs)
-        if stream:
-            return self._stream_tokens(response)
-        return response.choices[0].message.content
+        try:
+            response = litellm.completion(**kwargs)
+        except Exception as e:
+            raise ProviderError(f"LLM call failed ({self._provider_name}): {e}") from e
 
-    def _stream_tokens(self, response):
-        for chunk in response:
-            token = chunk.choices[0].delta.content
-            if token:
-                yield token
+        return stream_tokens(response) if stream else response.choices[0].message.content
 
-    def _check_api_key(self):
-        key_map = {
-            "claude_api": "ANTHROPIC_API_KEY",
-            "openai":     "OPENAI_API_KEY",
-            "gemini":     "GEMINI_API_KEY",
-        }
-        env_var = key_map.get(self._provider_name)
-        if env_var and not os.getenv(env_var):
-            raise RuntimeError(
-                f"Missing API key for '{self._provider_name}'. "
-                f"Set: export {env_var}=your_key_here"
-            )
+
+def _key_available(provider_name: str) -> bool:
+    """Return True if the API key for this provider is set (or not needed)."""
+    from core.provider import _API_KEY_MAP
+    env_var = _API_KEY_MAP.get(provider_name)
+    if env_var is None:
+        return True  # ollama and mock need no key
+    return bool(os.getenv(env_var))
 
 
 if __name__ == "__main__":

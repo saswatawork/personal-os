@@ -20,14 +20,12 @@ The guide is Socratic: it asks before it tells. /test enforces the one rule:
 don't move forward until you can explain the current thing.
 """
 
-import sys
 import argparse
+import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
-from core.context_loader import ContextLoader, LIGHT
-from core.router import Router
+from core.context_loader import LIGHT, ContextLoader
+from core.router import Router, RoutedProvider
 from apps.learning.progress import Progress
 
 SEPARATOR = "─" * 60
@@ -108,21 +106,33 @@ def opening_message(progress: Progress) -> str:
         note = progress.session_notes[-1]["summary"] if progress.session_notes else ""
         base = f"Last session was {progress.last_session_date}."
         if note:
-            base += f" You noted: \"{note}\""
+            base += f' You noted: "{note}"'
         if topic_display:
-            return f"{base}\n\nWe're on Module {progress.current_module} ({module_name}), topic: {topic_display}.\n\nWant to continue, or is there something specific you want to work through today?"
+            return (
+                f"{base}\n\nWe're on Module {progress.current_module} ({module_name}), "
+                f"topic: {topic_display}.\n\n"
+                "Want to continue, or is there something specific you want to work through today?"
+            )
         else:
-            return f"{base}\n\nAll topics in Module {progress.current_module} are done. Ready to move to Module {progress.current_module + 1}?"
+            return (
+                f"{base}\n\nAll topics in Module {progress.current_module} are done. "
+                f"Ready to move to Module {progress.current_module + 1}?"
+            )
     else:
+        topic_line = f"Current topic: {topic_display}\n\n" if topic_display else ""
         return (
             f"First session. Starting Module {progress.current_module}: {module_name}.\n\n"
-            f"{'Current topic: ' + topic_display + chr(10) + chr(10) if topic_display else ''}"
+            f"{topic_line}"
             "Before I explain anything — tell me what you already know about this topic. "
             "Even rough is fine. What have you heard or read?"
         )
 
 
-def generate_session_summary(routed_provider, system_prompt: str, history: list) -> str:
+def generate_session_summary(
+    provider: RoutedProvider,
+    system_prompt: str,
+    history: list[dict[str, str]],
+) -> str:
     if not history:
         return "Session had no exchanges."
     summary_request = (
@@ -131,12 +141,17 @@ def generate_session_summary(routed_provider, system_prompt: str, history: list)
         "Be specific — name the topic and the insight or gap. No filler."
     )
     try:
-        return routed_provider.chat(summary_request, system_prompt, history=history)
+        return str(provider.chat(summary_request, system_prompt, history=history))
     except Exception:
         return "Session completed — summary unavailable."
 
 
-def run_feynman_test(routed_provider, system_prompt: str, history: list, progress: Progress) -> list:
+def run_feynman_test(
+    provider: RoutedProvider,
+    system_prompt: str,
+    history: list[dict[str, str]],
+    progress: Progress,
+) -> list[dict[str, str]]:
     topic = progress.current_topic or progress.next_topic()
     topic_display = topic.replace("_", " ") if topic else "current topic"
     prompt = (
@@ -146,9 +161,9 @@ def run_feynman_test(routed_provider, system_prompt: str, history: list, progres
         "or identify the single most important gap and ask one targeted question about it. "
         "Do not explain the topic yourself yet."
     )
-    print(f"\nGuide: ", end="", flush=True)
+    print("\nGuide: ", end="", flush=True)
     try:
-        response = routed_provider.chat(prompt, system_prompt, history=history)
+        response = str(provider.chat(prompt, system_prompt, history=history))
         print(response)
     except Exception as e:
         print(f"Error: {e}")
@@ -159,7 +174,9 @@ def run_feynman_test(routed_provider, system_prompt: str, history: list, progres
 
 
 def build_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Learning guide — Socratic sessions for your curriculum")
+    parser = argparse.ArgumentParser(
+        description="Learning guide — Socratic sessions for your curriculum"
+    )
     parser.add_argument("--status", action="store_true", help="Show progress and exit")
     parser.add_argument("--module", type=int, metavar="N", help="Jump to module N")
     return parser.parse_args()
@@ -192,17 +209,17 @@ def main() -> None:
     system_prompt = build_system_prompt(loader, progress)
 
     router = Router()
-    # Learning questions are always complex — use strong tier directly
+    # Learning questions are always complex — route directly to strong tier.
     _, routed = router.route_with_tier("should I learn this topic in depth for my career")
 
-    history: list = []
+    history: list[dict[str, str]] = []
     mode = "guide"
 
     print(SEPARATOR)
-    print(f"  Learning Guide")
+    print("  Learning Guide")
     print(f"  Module {progress.current_module}: {progress.module_name()}")
     print(f"  Model: {routed.active_model}")
-    print(f"  Type /help for commands")
+    print("  Type /help for commands")
     print(SEPARATOR)
     print()
 
@@ -290,15 +307,8 @@ def main() -> None:
             print()
             continue
 
-        # Regular message
-        if mode == "guide":
-            # In guide mode, prepend a soft instruction so the LLM stays Socratic
-            guided_input = user_input
-        else:
-            guided_input = user_input
-
         try:
-            response = routed.chat(guided_input, system_prompt, history=history)
+            response = str(routed.chat(user_input, system_prompt, history=history))
         except Exception as e:
             print(f"\nError: {e}\n")
             continue

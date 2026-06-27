@@ -2,19 +2,20 @@
 Learning progress tracker — reads and writes data/learning_progress.json.
 
 Keeps module/topic state separate from the curriculum definition in context/learning.md.
-State is written only at session end (/done or /quit) — not after every message.
+State is written only at session end (/done) — not after every message.
 """
 
 import json
 from datetime import date
 from pathlib import Path
-from typing import Optional, List
 
 PROGRESS_PATH = Path(__file__).parent.parent.parent / "data" / "learning_progress.json"
 
+MAX_SESSION_NOTES = 10
+
 
 class Progress:
-    def __init__(self, path: Path = PROGRESS_PATH):
+    def __init__(self, path: Path = PROGRESS_PATH) -> None:
         self._path = path
         self._data = self._load()
 
@@ -22,7 +23,14 @@ class Progress:
         if self._path.exists():
             with open(self._path) as f:
                 return json.load(f)
-        return {"current_module": 1, "current_topic": None, "completed_topics": [], "session_notes": [], "last_session_date": None, "modules": {}}
+        return {
+            "current_module": 1,
+            "current_topic": None,
+            "completed_topics": [],
+            "session_notes": [],
+            "last_session_date": None,
+            "modules": {},
+        }
 
     def save(self) -> None:
         with open(self._path, "w") as f:
@@ -33,36 +41,35 @@ class Progress:
         return self._data.get("current_module", 1)
 
     @property
-    def current_topic(self) -> Optional[str]:
+    def current_topic(self) -> str | None:
         return self._data.get("current_topic")
 
     @property
-    def completed_topics(self) -> List[str]:
+    def completed_topics(self) -> list[str]:
         return self._data.get("completed_topics", [])
 
     @property
-    def last_session_date(self) -> Optional[str]:
+    def last_session_date(self) -> str | None:
         return self._data.get("last_session_date")
 
     @property
-    def session_notes(self) -> list:
+    def session_notes(self) -> list[dict]:
         return self._data.get("session_notes", [])
 
-    def module_name(self, module_num: Optional[int] = None) -> str:
+    def module_name(self, module_num: int | None = None) -> str:
         n = str(module_num or self.current_module)
         modules = self._data.get("modules", {})
         return modules.get(n, {}).get("name", f"Module {n}")
 
-    def module_topics(self, module_num: Optional[int] = None) -> list:
+    def module_topics(self, module_num: int | None = None) -> list[str]:
         n = str(module_num or self.current_module)
         modules = self._data.get("modules", {})
         return modules.get(n, {}).get("topics", [])
 
-    def next_topic(self) -> Optional[str]:
+    def next_topic(self) -> str | None:
         """Return the next uncompleted topic in the current module."""
-        topics = self.module_topics()
         done = set(self.completed_topics)
-        for t in topics:
+        for t in self.module_topics():
             if t not in done:
                 return t
         return None
@@ -75,27 +82,27 @@ class Progress:
     def mark_topic_complete(self, topic: str) -> None:
         if topic not in self._data["completed_topics"]:
             self._data["completed_topics"].append(topic)
-        next_t = self.next_topic()
-        self._data["current_topic"] = next_t
+        self._data["current_topic"] = self.next_topic()
 
     def advance_module(self) -> bool:
-        """Move to the next module. Returns False if already at last module."""
+        """Move to the next module. Returns False if already at the last module."""
         modules = self._data.get("modules", {})
         next_module = self.current_module + 1
         if str(next_module) not in modules:
             return False
         self._data["current_module"] = next_module
-        self._data["current_topic"] = self.module_topics(next_module)[0] if self.module_topics(next_module) else None
+        topics = self.module_topics(next_module)
+        self._data["current_topic"] = topics[0] if topics else None
         return True
 
     def add_session_note(self, summary: str) -> None:
-        notes = self._data.setdefault("session_notes", [])
+        notes: list[dict] = self._data.setdefault("session_notes", [])
         notes.append({"date": str(date.today()), "summary": summary})
-        if len(notes) > 10:
+        if len(notes) > MAX_SESSION_NOTES:
             notes.pop(0)
         self._data["last_session_date"] = str(date.today())
 
-    def get_score(self, topic: str) -> Optional[int]:
+    def get_score(self, topic: str) -> int | None:
         return self._data.get("scores", {}).get(topic)
 
     def set_score(self, topic: str, score: int) -> None:
@@ -104,12 +111,11 @@ class Progress:
     def status_summary(self) -> str:
         topic = self.current_topic or self.next_topic() or "all done"
         topic_display = topic.replace("_", " ") if topic else "all done"
-        module_display = self.module_name()
         completed_count = len(self.completed_topics)
         last = self.last_session_date or "never"
         cutoff = self._data.get("cutoff_score", 80)
         lines = [
-            f"Module {self.current_module}: {module_display}",
+            f"Module {self.current_module}: {self.module_name()}",
             f"Current topic: {topic_display}",
             f"Topics completed: {completed_count} / 12",
             f"Pass threshold: {cutoff}/100",

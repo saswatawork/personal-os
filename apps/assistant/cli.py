@@ -2,24 +2,21 @@
 Personal assistant CLI.
 
 Usage:
-    python -m apps.assistant.cli                          # interactive, fixed provider from settings.yaml
-    python -m apps.assistant.cli --route                  # interactive, auto-routes each question to cheapest model
+    python -m apps.assistant.cli                          # interactive, provider from settings.yaml
+    python -m apps.assistant.cli --route                  # auto-routes each question to cheapest model
     python -m apps.assistant.cli --light                  # LIGHT context preset
     python -m apps.assistant.cli --once "your question"   # single question, no REPL
     python -m apps.assistant.cli --route --once "..."     # single question with auto-routing
 
 With --route, simple questions use llama3.2 (fast/free), complex questions use qwen2.5:7b
-or a cloud model. Tier is shown before each response so you can see routing decisions.
+or a cloud model. The tier is shown before each response.
 """
 
-import sys
 import argparse
-from pathlib import Path
+import sys
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
-from core.context_loader import ContextLoader, FULL, LIGHT
-from core.provider import Provider, ProviderError
+from core.context_loader import FULL, LIGHT, ContextLoader
+from core.provider import Provider, ProviderError, ProviderProtocol
 from core.router import Router
 
 HELP_TEXT = """
@@ -57,39 +54,12 @@ def build_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def ask(provider: Provider, system_prompt: str, history: list, user_input: str) -> str:
-    """
-    Send the user's message with full conversation history to the provider.
-    History is a list of {"role": "user"/"assistant", "content": "..."} dicts.
-    Returns the assistant's response string.
-    """
-    if provider.active_provider == "mock":
-        # Mock doesn't use history, but we still want to exercise the path
-        return provider.chat(user_input, system_prompt)
-
-    # Build messages: system prompt + conversation history + new message
-    try:
-        import litellm
-    except ImportError:
-        raise ProviderError("litellm is not installed. Run: pip install litellm")
-
-    messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(history)
-    messages.append({"role": "user", "content": user_input})
-
-    model = provider._provider_config["model"]
-    kwargs = {"model": model, "messages": messages}
-    if "base_url" in provider._provider_config:
-        kwargs["api_base"] = provider._provider_config["base_url"]
-
-    try:
-        response = litellm.completion(**kwargs)
-        return response.choices[0].message.content
-    except Exception as e:
-        raise ProviderError(f"LLM call failed: {e}") from e
-
-
-def run_once(provider: Provider, loader: ContextLoader, context_preset: list, question: str) -> None:
+def run_once(
+    provider: ProviderProtocol,
+    loader: ContextLoader,
+    context_preset: list[str],
+    question: str,
+) -> None:
     system_prompt = loader.as_system_prompt(context_preset)
     try:
         response = provider.chat(question, system_prompt)
@@ -99,15 +69,20 @@ def run_once(provider: Provider, loader: ContextLoader, context_preset: list, qu
         sys.exit(1)
 
 
-def run_interactive(provider, loader: ContextLoader, context_preset: list, args=None) -> None:
+def run_interactive(
+    provider: ProviderProtocol,
+    loader: ContextLoader,
+    context_preset: list[str],
+    use_routing: bool = False,
+) -> None:
     preset_name = "FULL" if context_preset is FULL else "LIGHT"
-    history: list = []
+    history: list[dict[str, str]] = []
 
     print(SEPARATOR)
-    print(f"  Personal Assistant")
+    print("  Personal Assistant")
     print(f"  Provider: {provider.active_provider}  |  Model: {provider.active_model}")
     print(f"  Context: {preset_name}")
-    print(f'  Type /help for commands, /quit to exit')
+    print("  Type /help for commands, /quit to exit")
     print(SEPARATOR)
     print()
 
@@ -123,7 +98,6 @@ def run_interactive(provider, loader: ContextLoader, context_preset: list, args=
         if not user_input:
             continue
 
-        # Handle slash commands
         if user_input.startswith("/"):
             cmd = user_input.lower()
             if cmd in ("/quit", "/exit", "/q"):
@@ -153,24 +127,22 @@ def run_interactive(provider, loader: ContextLoader, context_preset: list, args=
             print()
             continue
 
-        # Regular question — route or use fixed provider
         try:
-            if args and args.route:
+            if use_routing:
                 router = Router()
                 tier, routed = router.route_with_tier(user_input)
                 print(f"[routing → {tier}: {routed.active_model}]")
                 response = routed.chat(user_input, system_prompt, history=history)
             else:
-                response = ask(provider, system_prompt, history, user_input)
+                response = provider.chat(user_input, system_prompt, history=history)
         except (ProviderError, RuntimeError) as e:
             print(f"\nError: {e}\n")
             continue
 
         print(f"\nAssistant: {response}\n")
 
-        # Store in history for multi-turn conversation
         history.append({"role": "user", "content": user_input})
-        history.append({"role": "assistant", "content": response})
+        history.append({"role": "assistant", "content": str(response)})
 
 
 def main() -> None:
@@ -185,7 +157,7 @@ def main() -> None:
             if args.once:
                 print(f"[routing → {tier}: {provider.active_model}]")
         else:
-            provider = Provider()
+            provider: ProviderProtocol = Provider()
     except (ProviderError, Exception) as e:
         print(f"Startup error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -193,7 +165,7 @@ def main() -> None:
     if args.once:
         run_once(provider, loader, context_preset, args.once)
     else:
-        run_interactive(provider, loader, context_preset, args)
+        run_interactive(provider, loader, context_preset, use_routing=args.route)
 
 
 if __name__ == "__main__":

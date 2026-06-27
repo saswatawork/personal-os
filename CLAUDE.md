@@ -130,6 +130,18 @@ Do not skip this. The quality of every response depends on this context being lo
 ## Current Build State
 Check the latest ADR in `decisions/` to know the current state of the project.
 
+## Job Prep Sessions — How To Run One
+
+When the user says **"job prep"**:
+
+1. Read `apps/job_search/roadmap.md` — this has the full 10-week plan, target profiles, and where to apply
+2. Read `context/career.md` — current situation and target role
+3. Tell him: which week we're on, what the goal is this week, and what to work on right now
+4. Get straight to work — no recap, no preamble
+5. When the week's goal is done, update `roadmap.md` to mark it complete and tell him what's next
+
+---
+
 ## Learning Sessions — How To Run One
 
 When the user says "start a learning session" or "let's do learning" or "I want to study":
@@ -152,3 +164,54 @@ When the session ends, ask if he wants to save a session note. If yes, update `d
 - No unnecessary abstractions — build what's needed now, design for what's needed later
 - Platform independent — LLM provider must be swappable
 - Understand while building — if something is unclear, stop and clarify
+
+---
+
+## Python Standards — Always Follow These
+
+### Setup
+- The package is installed with `pip install -e .` from `pyproject.toml`.
+  **Never use `sys.path.insert()`** — if an import fails, fix the install, not the path.
+- Lint + format before finishing: `ruff check . --fix && ruff format .`
+- Type check: `mypy .`
+
+### Type Annotations
+- Use Python 3.10+ native types everywhere: `str | None`, `list[str]`, `dict[str, Any]`, `tuple[str, int]`.
+- **Never** import `Optional`, `List`, `Tuple`, `Dict` from `typing` — these are legacy.
+- Use `typing.Any` only when the shape is genuinely unknown (e.g., raw YAML, litellm responses).
+- When a function returns different types based on a flag (e.g., `stream: bool`), annotate it as a union: `str | Generator[str, None, None]`.
+- When code accepts either `Provider` or `RoutedProvider`, use `ProviderProtocol` from `core/provider.py`.
+
+### No Duplicate Code
+- `check_api_key()`, `stream_tokens()`, and `build_messages()` live in `core/provider.py`.
+  Both `Provider` and `RoutedProvider` (in `router.py`) call these — never copy them.
+- If you find the same logic in two places, extract it before writing a third.
+
+### Encapsulation
+- **Never access private attributes** (`_foo`) of another class from outside that class.
+- If you need something from inside a class, add a method or property to that class.
+
+### Logging vs Printing
+- Application code (CLIs) uses `print()` — that's the user-facing output.
+- Library / core code (`core/`, any class) uses `logging` — **never `print()`**.
+  ```python
+  import logging
+  log = logging.getLogger(__name__)
+  log.warning("Falling back to local model: %s", model)
+  ```
+
+### Error Handling
+- Raise `ProviderError` (from `core/provider.py`) for all LLM/config failures.
+- Catch bare `Exception` only at the top-most call site (CLI `main()`), and only to print a clean error + exit.
+- Never silently swallow exceptions in library code. If you catch, either re-raise or log with `log.exception(...)`.
+
+### Named Constants
+- No magic numbers or repeated string literals. Name them at the top of the file.
+  ```python
+  MAX_SESSION_NOTES = 10   # good
+  if len(notes) > 10:      # bad
+  ```
+
+### `__init__.py` Files
+- Keep them empty unless you are deliberately re-exporting a public API.
+  Don't add imports just because it "feels cleaner" — it creates hidden coupling.

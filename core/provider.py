@@ -1,8 +1,18 @@
+"""
+LLM provider abstraction — the only place in the project that talks to an LLM.
+
+All apps import Provider or ProviderProtocol from here.
+To switch LLM providers, change active_provider in config/settings.yaml — nothing else.
+"""
+
+import logging
 import os
 from pathlib import Path
-from typing import Generator
+from typing import Any, Generator, Protocol
 
 import yaml
+
+log = logging.getLogger(__name__)
 
 CONFIG_PATH = Path(__file__).parent.parent / "config" / "settings.yaml"
 
@@ -11,10 +21,84 @@ MOCK_RESPONSE = (
     "Switch active_provider in config/settings.yaml to use a real LLM."
 )
 
+# Maps provider names to their expected environment variable.
+_API_KEY_MAP: dict[str, str] = {
+    "claude_api": "ANTHROPIC_API_KEY",
+    "openai":     "OPENAI_API_KEY",
+    "gemini":     "GEMINI_API_KEY",
+}
+
 
 class ProviderError(Exception):
     pass
 
+
+# --------------------------------------------------------------------------- #
+# Shared utilities — used by both Provider and RoutedProvider (in router.py)   #
+# --------------------------------------------------------------------------- #
+
+def check_api_key(provider_name: str) -> None:
+    """Raise ProviderError early if the required API key env-var is missing."""
+    env_var = _API_KEY_MAP.get(provider_name)
+    if env_var and not os.getenv(env_var):
+        raise ProviderError(
+            f"Missing API key for '{provider_name}'. "
+            f"Set environment variable: export {env_var}=your_key_here"
+        )
+
+
+def stream_tokens(response: Any) -> Generator[str, None, None]:
+    """Yield text tokens from a litellm streaming response."""
+    for chunk in response:
+        token = chunk.choices[0].delta.content
+        if token:
+            yield token
+
+
+def build_messages(
+    user_message: str,
+    system_prompt: str | None,
+    history: list[dict[str, str]] | None,
+) -> list[dict[str, str]]:
+    """Assemble the message list that litellm expects."""
+    messages: list[dict[str, str]] = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": user_message})
+    return messages
+
+
+# --------------------------------------------------------------------------- #
+# Protocol — the shared interface for Provider and RoutedProvider               #
+# --------------------------------------------------------------------------- #
+
+class ProviderProtocol(Protocol):
+    """
+    Structural interface that Provider and RoutedProvider both satisfy.
+    Use this as the type annotation whenever code accepts either class.
+    """
+
+    @property
+    def active_provider(self) -> str: ...
+    @property
+    def active_model(self) -> str: ...
+
+    def status(self) -> str: ...
+
+    def chat(
+        self,
+        user_message: str,
+        system_prompt: str | None = None,
+        stream: bool = False,
+        history: list[dict[str, str]] | None = None,
+    ) -> str | Generator[str, None, None]: ...
+
+
+# --------------------------------------------------------------------------- #
+# Provider — reads active_provider from settings.yaml                           #
+# --------------------------------------------------------------------------- #
 
 class Provider:
     """
@@ -27,32 +111,38 @@ class Provider:
         response = provider.chat("What should I focus on this week?", system_prompt)
     """
 
-    def __init__(self, config_path: str = None):
-        self._config = self._load_config(config_path or CONFIG_PATH)
-        self._active = self._config["active_provider"]
-        self._provider_config = self._config["providers"][self._active]
+    def __init__(self, config_path: Path | str = CONFIG_PATH) -> None:
+        self._config = self._load_config(Path(config_path))
+        self._active: str = self._config["active_provider"]
+        self._provider_config: dict[str, Any] = self._config["providers"][self._active]
 
     # ------------------------------------------------------------------ #
     # Public interface                                                      #
     # ------------------------------------------------------------------ #
 
-    def chat(self, user_message: str, system_prompt: str = None, stream: bool = False):
+    def chat(
+        self,
+        user_message: str,
+        system_prompt: str | None = None,
+        stream: bool = False,
+        history: list[dict[str, str]] | None = None,
+    ) -> str | Generator[str, None, None]:
         """
         Send a message and get a response.
 
         Args:
-            user_message: the user's question or input
-            system_prompt: context to load before the conversation (from ContextLoader)
-            stream: if True, yields tokens one by one instead of returning full string
+            user_message:  the user's question or input
+            system_prompt: context injected before the conversation (from ContextLoader)
+            stream:        yield tokens one by one instead of returning a full string
+            history:       prior turns — [{"role": "user"/"assistant", "content": "..."}]
 
         Returns:
-            str — full response (stream=False)
-            Generator[str] — token stream (stream=True)
+            str when stream=False, Generator[str] when stream=True
         """
         if self._active == "mock":
             return self._mock_response(stream)
 
-        messages = self._build_messages(user_message, system_prompt)
+        messages = build_messages(user_message, system_prompt, history)
         return self._call_litellm(messages, stream)
 
     @property
@@ -70,70 +160,37 @@ class Provider:
     # Internal                                                              #
     # ------------------------------------------------------------------ #
 
-    def _build_messages(self, user_message: str, system_prompt: str = None) -> list:
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": user_message})
-        return messages
-
-    def _call_litellm(self, messages: list, stream: bool):
+    def _call_litellm(
+        self,
+        messages: list[dict[str, str]],
+        stream: bool,
+    ) -> str | Generator[str, None, None]:
         try:
             import litellm
         except ImportError:
-            raise ProviderError(
-                "litellm is not installed. Run: pip install litellm"
-            )
+            raise ProviderError("litellm is not installed. Run: pip install litellm")
 
         model = self._provider_config["model"]
-        kwargs = {"model": model, "messages": messages, "stream": stream}
-
-        # ollama needs a base_url
+        kwargs: dict[str, Any] = {"model": model, "messages": messages, "stream": stream}
         if "base_url" in self._provider_config:
             kwargs["api_base"] = self._provider_config["base_url"]
 
-        # surface missing API keys early with a clear message
-        self._check_api_key()
+        check_api_key(self._active)
 
         try:
             response = litellm.completion(**kwargs)
         except Exception as e:
             raise ProviderError(f"LLM call failed ({self._active}): {e}") from e
 
-        if stream:
-            return self._stream_tokens(response)
-        return response.choices[0].message.content
+        return stream_tokens(response) if stream else response.choices[0].message.content
 
-    def _stream_tokens(self, response) -> Generator[str, None, None]:
-        for chunk in response:
-            token = chunk.choices[0].delta.content
-            if token:
-                yield token
-
-    def _mock_response(self, stream: bool):
+    def _mock_response(self, stream: bool) -> str | Generator[str, None, None]:
         if stream:
-            return self._mock_stream()
+            return (word + " " for word in MOCK_RESPONSE.split())
         return MOCK_RESPONSE
 
-    def _mock_stream(self) -> Generator[str, None, None]:
-        for word in MOCK_RESPONSE.split():
-            yield word + " "
-
-    def _check_api_key(self):
-        key_map = {
-            "claude_api": "ANTHROPIC_API_KEY",
-            "openai":     "OPENAI_API_KEY",
-            "gemini":     "GEMINI_API_KEY",
-        }
-        env_var = key_map.get(self._active)
-        if env_var and not os.getenv(env_var):
-            raise ProviderError(
-                f"Missing API key for '{self._active}'. "
-                f"Set environment variable: export {env_var}=your_key_here"
-            )
-
     @staticmethod
-    def _load_config(config_path: Path) -> dict:
+    def _load_config(config_path: Path) -> dict[str, Any]:
         if not config_path.exists():
             raise ProviderError(f"Config file not found: {config_path}")
         with open(config_path) as f:
@@ -147,6 +204,6 @@ if __name__ == "__main__":
 
     response = provider.chat(
         user_message="What should I focus on this week?",
-        system_prompt="You are a personal advisor. The user is a software engineer."
+        system_prompt="You are a personal advisor. The user is a software engineer.",
     )
     print("Response:", response)
