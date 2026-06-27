@@ -1,8 +1,8 @@
 # personal-os — Claude Code Instructions
 
 ## What This Project Is
-A personal AI platform — one source of truth about who Saswata is, what he's building,
-and where he's going. Applications are built on top of it: personal assistant, learning
+A personal AI platform — one source of truth about who the user is, what they're building,
+and where they're going. Applications are built on top of it: personal assistant, learning
 guide, video studio bridge, and future apps.
 
 This is not a work project. It is infrastructure for a life.
@@ -22,7 +22,7 @@ This is not a work project. It is infrastructure for a life.
 ### When To Write an ADR
 - Affects architecture or project structure
 - Involves a real choice between two or more options
-- Future-Saswata would want to understand the reasoning
+- Future-you would want to understand the reasoning
 
 ### ADR Format
 Save to `decisions/NNN-short-name.md`:
