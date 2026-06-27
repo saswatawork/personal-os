@@ -18,6 +18,23 @@ Apply these standards to every file you write or edit this session — not as a 
 - Apps read from `context/` — they never write to it without user input
 - Type all function signatures — no untyped parameters or return values
 
+## Before writing any code — ADR check
+
+Ask yourself: *"Does this change affect how the project is structured, or involve a real choice between alternatives?"*
+
+**Yes → write the ADR first, then code.** Examples that need an ADR:
+- Adding a new module or layer to `core/` or `apps/`
+- Choosing between two real implementation approaches
+- Changing how components interact with each other
+
+**No → proceed.** Examples that don't need an ADR:
+- Bug fixes
+- Adding a function to an existing module
+- Refactoring within a file
+- Standards cleanup
+
+If unsure, ask before writing.
+
 ## How to behave this session:
 
 - State which rule you're applying when you make a non-obvious choice
