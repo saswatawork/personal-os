@@ -3,6 +3,11 @@ __pycache__/
 *.pyc
 *.pyo
 .Python
+*.egg-info/
+
+# Job search — personal plans and study notes (local only)
+apps/job_search/roadmap.md
+apps/job_search/python_for_js_devs.md
 
 # Environment / secrets — never commit API keys
 .env
